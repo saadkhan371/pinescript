@@ -1,6 +1,6 @@
 // GainzAlgo EA - Optimized for 1min XAUUSD (Gold)
 // @version=5
-strategy("GainzAlgo EA [1m XAUUSD]", overlay=true, pyramiding=0, default_qty_type=strategy.percent_of_equity, default_qty_value=10, initial_capital=10000, commission_type=strategy.commission.percent, commission_value=0.1, process_orders_on_close=true, max_lines_count=500, max_boxes_count=500)
+strategy("GainzAlgo EA [1m XAUUSD]", overlay=true, pyramiding=0, default_qty_type=strategy.percent_of_equity, default_qty_value=10, initial_capital=10000, commission_type=strategy.commission.percent, commission_value=0.1, process_orders_on_close=true, max_lines_count=500, max_boxes_count=500, max_labels_count=500)
 
 // ═══════════════════════════════════════════════════════════════
 // PRESET SELECTION (Essential | Proficient | Alpha)
@@ -209,10 +209,26 @@ plot(showSLTP and strategy.position_size < 0 ? shortSL : na, "Short Position SL"
 plot(showSLTP and strategy.position_size < 0 ? shortTP : na, "Short Position TP", color=color.green, linewidth=2)
 
 // ═══════════════════════════════════════════════════════════════
-// SIGNAL SHAPES
+// SIGNAL LABELS (Clean BUY/SELL with TP/SL - like reference)
+// Green BUY box below bar | Red SELL box above bar | Gray TP/SL boxes
 // ═══════════════════════════════════════════════════════════════
-plotshape(showSignals and longCondition and barstate.isconfirmed, "Long Position Signal", shape.triangleup, location.belowbar, color.green, size=size.small)
-plotshape(showSignals and shortCondition and barstate.isconfirmed, "Short Position Signal", shape.triangledown, location.abovebar, color.red, size=size.small)
+var array<label> signalLabels = array.new<label>()
+
+if showSignals and barstate.isconfirmed
+    // BUY signal - green box below bar, TP/SL in gray box between bar and BUY
+    if longCondition
+        if array.size(signalLabels) >= 50
+            label.delete(array.shift(signalLabels))
+        tpSlText = "TP: " + str.tostring(longTP, "#.##") + "  SL: " + str.tostring(longSL, "#.##")
+        array.push(signalLabels, label.new(bar_index, low - atr * 0.15, tpSlText, xloc=xloc.bar_index, style=label.style_label_up, color=color.new(color.gray, 15), textcolor=color.white, size=size.small))
+        array.push(signalLabels, label.new(bar_index, low - atr * 0.5, "BUY", xloc=xloc.bar_index, style=label.style_label_up, color=color.green, textcolor=color.white, size=size.normal))
+    // SELL signal - red box above bar, TP/SL in gray box between bar and SELL
+    if shortCondition
+        if array.size(signalLabels) >= 50
+            label.delete(array.shift(signalLabels))
+        tpSlText = "TP: " + str.tostring(shortTP, "#.##") + "  SL: " + str.tostring(shortSL, "#.##")
+        array.push(signalLabels, label.new(bar_index, high + atr * 0.15, tpSlText, xloc=xloc.bar_index, style=label.style_label_down, color=color.new(color.gray, 15), textcolor=color.white, size=size.small))
+        array.push(signalLabels, label.new(bar_index, high + atr * 0.5, "SELL", xloc=xloc.bar_index, style=label.style_label_down, color=color.red, textcolor=color.white, size=size.normal))
 
 // ═══════════════════════════════════════════════════════════════
 // ALERTS (BUY / SELL) - Message clearly states signal type
