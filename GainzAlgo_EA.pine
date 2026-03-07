@@ -1,0 +1,233 @@
+// GainzAlgo EA - Optimized for 1min XAUUSD (Gold)
+// @version=5
+strategy("GainzAlgo EA [1m XAUUSD]", overlay=true, pyramiding=0, default_qty_type=strategy.percent_of_equity, default_qty_value=10, initial_capital=10000, commission_type=strategy.commission.percent, commission_value=0.1, process_orders_on_close=true, max_lines_count=500, max_boxes_count=500)
+
+// ═══════════════════════════════════════════════════════════════
+// PRESET SELECTION (Essential | Proficient | Alpha)
+// ═══════════════════════════════════════════════════════════════
+preset = input.string("Alpha (Aggressive)", "Preset", options=["Essential (Conservative)", "Proficient (Balanced)", "Alpha (Aggressive)"], group="Preset")
+
+// ═══════════════════════════════════════════════════════════════
+// INPUTS
+// ═══════════════════════════════════════════════════════════════
+// EMA Settings (tuned for 1m - faster response)
+emaFastLen = input.int(5, "Fast EMA Length", minval=1, group="Indicators")
+emaSlowLen = input.int(13, "Slow EMA Length", minval=1, group="Indicators")
+emaTrendLen = input.int(34, "Trend EMA Length", minval=1, group="Indicators")
+
+// RSI Settings (adjusted for gold volatility)
+rsiLen = input.int(7, "RSI Length", minval=1, group="Indicators")
+rsiOB = input.int(72, "RSI Overbought", minval=50, maxval=100, group="Indicators")
+rsiOS = input.int(28, "RSI Oversold", minval=0, maxval=50, group="Indicators")
+
+// ATR for SL/TP (gold needs slightly wider stops on 1m)
+atrLen = input.int(14, "ATR Length", minval=1, group="Risk Management")
+useAtrMultiplier = input.bool(true, "Use ATR for SL/TP", group="Risk Management")
+
+// Risk Management - Preset-based defaults
+riskPct = input.float(1.0, "Risk % per Trade", minval=0.1, maxval=10, step=0.1, group="Risk Management")
+tpMultiplier = input.float(2.0, "Take Profit (x ATR)", minval=0.5, maxval=5, step=0.1, group="Risk Management")
+slMultiplier = input.float(1.0, "Stop Loss (x ATR)", minval=0.5, maxval=3, step=0.1, group="Risk Management")
+
+// Visuals
+showSignals = input.bool(true, "Show Entry/Exit Signals", group="Display")
+showEMAs = input.bool(true, "Show EMAs", group="Display")
+showSLTP = input.bool(true, "Show SL/TP Levels", group="Display")
+showProjections = input.bool(true, "Show Projection Lines (TradingView style)", group="Display")
+projectionBars = input.int(60, "Projection Extend (bars)", minval=10, maxval=200, group="Display")
+
+// ═══════════════════════════════════════════════════════════════
+// PRESET-BASED PARAMETER ADJUSTMENTS
+// Essential: Conservative - fewer signals, wider stops
+// Proficient: Balanced
+// Alpha: Aggressive - more signals, tighter stops, best for lower TFs
+// ═══════════════════════════════════════════════════════════════
+// 1m XAUUSD: gold spreads/spikes need slightly wider SL, tighter TP for scalping
+presetTP = preset == "Essential (Conservative)" ? 2.2 : preset == "Proficient (Balanced)" ? 1.8 : 1.4
+presetSL = preset == "Essential (Conservative)" ? 1.8 : preset == "Proficient (Balanced)" ? 1.2 : 1.0
+presetRSIThresh = preset == "Essential (Conservative)" ? 3.0 : preset == "Proficient (Balanced)" ? 5.0 : 8.0
+
+// ═══════════════════════════════════════════════════════════════
+// INDICATORS (No Repainting - uses confirmed close)
+// ═══════════════════════════════════════════════════════════════
+emaFast = ta.ema(close, emaFastLen)
+emaSlow = ta.ema(close, emaSlowLen)
+emaTrend = ta.ema(close, emaTrendLen)
+rsi = ta.rsi(close, rsiLen)
+atr = ta.atr(atrLen)
+
+// ═══════════════════════════════════════════════════════════════
+// TREND DETECTION
+// ═══════════════════════════════════════════════════════════════
+bullishTrend = emaFast > emaSlow and emaSlow > emaTrend
+bearishTrend = emaFast < emaSlow and emaSlow < emaTrend
+
+// Price above/below trend EMA
+priceAboveTrend = close > emaTrend
+priceBelowTrend = close < emaTrend
+
+// ═══════════════════════════════════════════════════════════════
+// ENTRY CONDITIONS (Confirmed on bar close - NO REPAINTING)
+// ═══════════════════════════════════════════════════════════════
+// Long: Bullish trend + RSI not overbought + (EMA crossover OR pullback to fast EMA)
+longCrossover = ta.crossover(emaFast, emaSlow)
+longPullback = close > emaFast and emaFast > emaSlow and rsi > rsiOS and rsi < (rsiOB - presetRSIThresh)
+longBounce = ta.crossover(close, emaFast) and emaFast > emaSlow
+
+longCondition = bullishTrend and priceAboveTrend and (longCrossover or longPullback or longBounce) and rsi < rsiOB
+
+// Short: Bearish trend + RSI not oversold + (EMA crossover OR pullback)
+shortCrossover = ta.crossunder(emaFast, emaSlow)
+shortPullback = close < emaFast and emaFast < emaSlow and rsi < rsiOB and rsi > (rsiOS + presetRSIThresh)
+shortBounce = ta.crossunder(close, emaFast) and emaFast < emaSlow
+
+shortCondition = bearishTrend and priceBelowTrend and (shortCrossover or shortPullback or shortBounce) and rsi > rsiOS
+
+// ═══════════════════════════════════════════════════════════════
+// EXIT CONDITIONS (Trend reversal)
+// ═══════════════════════════════════════════════════════════════
+longExitTrend = ta.crossunder(emaFast, emaSlow)
+shortExitTrend = ta.crossover(emaFast, emaSlow)
+
+// ═══════════════════════════════════════════════════════════════
+// SL/TP LEVELS (Locked at entry - NO REPAINTING)
+// ═══════════════════════════════════════════════════════════════
+var float longSL = na
+var float longTP = na
+var float shortSL = na
+var float shortTP = na
+
+// Effective multipliers from preset
+effTPMult = useAtrMultiplier ? presetTP : tpMultiplier
+effSLMult = useAtrMultiplier ? presetSL : slMultiplier
+
+// Calculate levels only when entering (confirmed bar) - ensure valid ATR
+validAtr = atr > 0 ? atr : ta.sma(high - low, 14)
+if barstate.isconfirmed
+    if longCondition
+        longSL := close - validAtr * effSLMult
+        longTP := close + validAtr * effTPMult
+    if shortCondition
+        shortSL := close + validAtr * effSLMult
+        shortTP := close - validAtr * effTPMult
+
+// ═══════════════════════════════════════════════════════════════
+// STRATEGY EXECUTION (Only on confirmed bars)
+// ═══════════════════════════════════════════════════════════════
+if barstate.isconfirmed
+    // Long Position Entry (with proper SL and TP)
+    if longCondition and strategy.position_size <= 0
+        if strategy.position_size < 0
+            strategy.close("Short Position", comment="Reverse")
+        strategy.entry("Long Position", strategy.long)
+        strategy.exit("Long Position Exit", "Long Position", stop=longSL, limit=longTP, comment="SL | TP")
+
+    // Short Position Entry (with proper SL and TP)
+    if shortCondition and strategy.position_size >= 0
+        if strategy.position_size > 0
+            strategy.close("Long Position", comment="Reverse")
+        strategy.entry("Short Position", strategy.short)
+        strategy.exit("Short Position Exit", "Short Position", stop=shortSL, limit=shortTP, comment="SL | TP")
+
+    // Trend reversal exit (optional - SL/TP handles most)
+    if strategy.position_size > 0 and longExitTrend and not longCondition
+        strategy.close("Long Position", comment="Trend Exit")
+    if strategy.position_size < 0 and shortExitTrend and not shortCondition
+        strategy.close("Short Position", comment="Trend Exit")
+
+// ═══════════════════════════════════════════════════════════════
+// PROJECTION LINES (TradingView Projection style - Entry, SL, TP)
+// Long Position: Entry line + SL below + TP above, extending forward
+// Short Position: Entry line + SL above + TP below, extending forward
+// ═══════════════════════════════════════════════════════════════
+var line longEntryLine = na
+var line longSLLine = na
+var line longTPLine = na
+var box longProjectionBox = na
+var line shortEntryLine = na
+var line shortSLLine = na
+var line shortTPLine = na
+var box shortProjectionBox = na
+
+if showProjections and barstate.isconfirmed
+    // Long Position projection - draw when entering
+    if longCondition and strategy.position_size <= 0
+        if not na(shortEntryLine)
+            line.delete(shortEntryLine)
+            line.delete(shortSLLine)
+            line.delete(shortTPLine)
+        if not na(shortProjectionBox)
+            box.delete(shortProjectionBox)
+        shortEntryLine := na
+        shortSLLine := na
+        shortTPLine := na
+        shortProjectionBox := na
+        if not na(longEntryLine)
+            line.delete(longEntryLine)
+            line.delete(longSLLine)
+            line.delete(longTPLine)
+        if not na(longProjectionBox)
+            box.delete(longProjectionBox)
+        longEntryLine := line.new(bar_index, close, bar_index + 1, close, xloc.bar_index, color=color.new(color.blue, 0), width=2, extend=extend.right)
+        longSLLine := line.new(bar_index, longSL, bar_index + 1, longSL, xloc.bar_index, color=color.new(color.red, 0), width=2, extend=extend.right)
+        longTPLine := line.new(bar_index, longTP, bar_index + 1, longTP, xloc.bar_index, color=color.new(color.green, 0), width=2, extend=extend.right)
+        longProjectionBox := box.new(bar_index, longTP, bar_index + projectionBars, longSL, xloc=xloc.bar_index, bgcolor=color.new(color.green, 90))
+    // Short Position projection - draw when entering
+    else if shortCondition and strategy.position_size >= 0
+        if not na(longEntryLine)
+            line.delete(longEntryLine)
+            line.delete(longSLLine)
+            line.delete(longTPLine)
+        if not na(longProjectionBox)
+            box.delete(longProjectionBox)
+        longEntryLine := na
+        longSLLine := na
+        longTPLine := na
+        longProjectionBox := na
+        if not na(shortEntryLine)
+            line.delete(shortEntryLine)
+            line.delete(shortSLLine)
+            line.delete(shortTPLine)
+        if not na(shortProjectionBox)
+            box.delete(shortProjectionBox)
+        shortEntryLine := line.new(bar_index, close, bar_index + 1, close, xloc.bar_index, color=color.new(color.blue, 0), width=2, extend=extend.right)
+        shortSLLine := line.new(bar_index, shortSL, bar_index + 1, shortSL, xloc.bar_index, color=color.new(color.red, 0), width=2, extend=extend.right)
+        shortTPLine := line.new(bar_index, shortTP, bar_index + 1, shortTP, xloc.bar_index, color=color.new(color.green, 0), width=2, extend=extend.right)
+        shortProjectionBox := box.new(bar_index, shortSL, bar_index + projectionBars, shortTP, xloc=xloc.bar_index, bgcolor=color.new(color.red, 90))
+
+// ═══════════════════════════════════════════════════════════════
+// PLOTS
+// ═══════════════════════════════════════════════════════════════
+plot(showEMAs ? emaFast : na, "Fast EMA", color=color.new(color.blue, 0), linewidth=2)
+plot(showEMAs ? emaSlow : na, "Slow EMA", color=color.new(color.orange, 0), linewidth=2)
+plot(showEMAs ? emaTrend : na, "Trend EMA", color=color.new(color.purple, 0), linewidth=2)
+
+// SL/TP level lines (when in position)
+plot(showSLTP and strategy.position_size > 0 ? longSL : na, "Long Position SL", color=color.red, linewidth=2)
+plot(showSLTP and strategy.position_size > 0 ? longTP : na, "Long Position TP", color=color.green, linewidth=2)
+plot(showSLTP and strategy.position_size < 0 ? shortSL : na, "Short Position SL", color=color.red, linewidth=2)
+plot(showSLTP and strategy.position_size < 0 ? shortTP : na, "Short Position TP", color=color.green, linewidth=2)
+
+// ═══════════════════════════════════════════════════════════════
+// SIGNAL SHAPES
+// ═══════════════════════════════════════════════════════════════
+plotshape(showSignals and longCondition and barstate.isconfirmed, "Long Position Signal", shape.triangleup, location.belowbar, color.green, size=size.small)
+plotshape(showSignals and shortCondition and barstate.isconfirmed, "Short Position Signal", shape.triangledown, location.abovebar, color.red, size=size.small)
+
+// ═══════════════════════════════════════════════════════════════
+// ALERTS (BUY / SELL) - Message clearly states signal type
+// ═══════════════════════════════════════════════════════════════
+plot(longCondition ? longSL : na, "Alert Long SL", display=display.none)
+plot(longCondition ? longTP : na, "Alert Long TP", display=display.none)
+plot(shortCondition ? shortSL : na, "Alert Short SL", display=display.none)
+plot(shortCondition ? shortTP : na, "Alert Short TP", display=display.none)
+
+// Option 1: Separate alerts - choose BUY or SELL when creating alert
+alertcondition(longCondition and barstate.isconfirmed, "BUY Signal", "🟢 BUY - Long Position | Entry: {{close}} | SL: {{plot(\"Alert Long SL\")}} | TP: {{plot(\"Alert Long TP\")}}")
+alertcondition(shortCondition and barstate.isconfirmed, "SELL Signal", "🔴 SELL - Short Position | Entry: {{close}} | SL: {{plot(\"Alert Short SL\")}} | TP: {{plot(\"Alert Short TP\")}}")
+
+// Option 2: Single alert for both - message shows BUY or SELL clearly
+if longCondition and barstate.isconfirmed
+    alert("🟢 BUY - Long Position | Entry: " + str.tostring(close, "#.##") + " | SL: " + str.tostring(longSL, "#.##") + " | TP: " + str.tostring(longTP, "#.##"), alert.freq_once_per_bar)
+if shortCondition and barstate.isconfirmed
+    alert("🔴 SELL - Short Position | Entry: " + str.tostring(close, "#.##") + " | SL: " + str.tostring(shortSL, "#.##") + " | TP: " + str.tostring(shortTP, "#.##"), alert.freq_once_per_bar)
