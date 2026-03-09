@@ -133,6 +133,7 @@ SELL when: Bearish trend (EMA stack down) + Price below trend + (Crossover OR Pu
 ┌────────────────┬─────────────┬─────────────┬─────────────────────────────┐
 │    PRESET      │  SL (ATR)   │  TP (ATR)   │         BEST FOR             │
 ├────────────────┼─────────────┼─────────────┼─────────────────────────────┤
+│ Micro          │    0.8x     │    1.0x     │ $100, small profit, scalping │
 │ Essential      │    1.8x     │    2.2x     │ Higher TFs, conservative     │
 │ Proficient     │    1.2x     │    1.8x     │ Balanced, all timeframes     │
 │ Alpha          │    1.0x     │    1.4x     │ M1 scalping, more signals    │
@@ -140,6 +141,44 @@ SELL when: Bearish trend (EMA stack down) + Price below trend + (Crossover OR Pu
 ```
 
 ---
+
+## Margin-Based Lot Sizing
+
+When **Auto lot to fit margin** is ON, the EA calculates the maximum lot size that fits within 90% of your free margin. This helps avoid "not enough money" errors on small accounts.
+
+**Note:** If your broker's minimum lot (e.g. 0.01) requires more margin than you have, the EA won't place trades. For $100 accounts with XAUUSD, consider a broker that offers **micro lots (0.001)** or **cent accounts**.
+
+## Troubleshooting: "symbol XAUUSDm does not exist" / "Error creating indicator handles"
+
+If you see **"symbol XAUUSDm does not exist"** or **"cannot load indicator ... (XAUUSDm) [4801]"**:
+- **Cause**: Strategy Tester is in **"Math calculations"** mode, which does not load history or symbol data.
+- **Fix**: In Strategy Tester, set **Model** to **"Open prices only"** or **"Every tick"** (not "Math calculations"). Then run the test again.
+
+## Troubleshooting: IO Error Code 49 (233)
+
+If you see "IO operation failed with code 49 (233)":
+- **Cause**: Often from too many chart objects or arrow code conflict
+- **Fix**: EA now uses arrow codes 241/242 and auto-cleans old objects
+- **Manual**: Remove EA from chart and re-attach to clear objects
+
+## Troubleshooting: "Not enough money" (10019) with $100 and 0.01 lot
+
+- **Cause:** Strategy Tester is using **leverage 1:1**. For 0.01 lot EURUSDm the required margin is ~\$1,170, so $100 is insufficient.
+- **Fix:** Set the tester **Leverage** to **Unlimited** or **1:100** (or 1:500). Then 0.01 lot needs ~\$12–30 margin and orders will open. (In MT5 the leverage may be in the tester panel, agent config, or account settings.)
+- The EA now skips sending orders when margin is insufficient and prints once: *"Set Strategy Tester LEVERAGE to Unlimited or 1:100"*.
+
+## Troubleshooting: No trades / balance not changing
+
+- **Debug mode (default ON)** – In EA inputs **Debug mode** = ON: full logs (signals, order open/fail) and **profit per closed trade** in the Journal (`[GainzAlgo] Trade closed | BUY/SELL symbol | Profit: X.XX | Balance: Y.YY`). Set **Debug mode** = OFF for live trading (errors only). Check the **Journal** tab for `[GainzAlgo] Signal BUY/SELL`, `>>> BUY/SELL opened`, and trade-closed lines. If you see no signals, try a **longer test period** or preset **Alpha** / **Micro** for more entries.
+- **EURUSDm / XAUUSDm** – Use **EURUSDm** for $100 (low margin). **XAUUSDm** needs ~$500+ for 0.001 lot.
+
+## Troubleshooting: No Arrows/Signals Showing
+
+- **Use M1 chart** – For best visibility, open the symbol on **M1 timeframe** and attach the EA
+- **Enable AutoTrading** – Press Ctrl+E or click the AutoTrading button (must be green)
+- **Show signals** – Ensure "Show BUY/SELL Arrows" is ON in EA inputs
+- **Check Experts tab** – View → Toolbox → Experts for init message and any errors
+- **Strategy Tester** – Enable "Visual mode" to see the chart during backtest
 
 ## Installation
 
@@ -160,7 +199,13 @@ SELL when: Bearish trend (EMA stack down) + Price below trend + (Crossover OR Pu
 ### Preset
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| Preset | Alpha | Essential / Proficient / Alpha |
+| Preset | Micro | Micro / Essential / Proficient / Alpha |
+
+### Timeframe
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| Timeframe mode | M1 only | **M1 only** – Always use 1-minute (recommended for scalping) |
+| | | **Current chart** – Use the chart's timeframe |
 
 ### Indicators
 | Parameter | Default | Description |
@@ -179,9 +224,11 @@ SELL when: Bearish trend (EMA stack down) + Price below trend + (Crossover OR Pu
 | Use ATR for SL/TP | true | Use preset ATR multipliers |
 | Take Profit (x ATR) | 2.0 | Manual TP when ATR off |
 | Stop Loss (x ATR) | 1.0 | Manual SL when ATR off |
-| **Enable Compounding** | false | Lot size grows with balance |
-| Fixed Lot Size | 0.01 | Lot when compounding OFF |
-| Risk % per trade | 1.0 | Balance % risked when compounding ON |
+| **Auto lot to fit margin** | true | Reduces lot to fit margin (avoids "not enough money") |
+| **Max positions** | 5 | Max open trades per signal |
+| Enable Compounding | false | Lot size grows with balance |
+| Fixed Lot Size | 0.001 | Max lot (or fixed when margin-based) |
+| Risk % per trade | 0.5 | Balance % when compounding ON |
 | Magic Number | 123456 | EA identifier |
 
 ### Display
@@ -208,14 +255,45 @@ SELL when: Bearish trend (EMA stack down) + Price below trend + (Crossover OR Pu
 
 | Account | Compounding | Lot Size | Preset |
 |---------|-------------|----------|--------|
-| $100 | OFF | 0.01 | Alpha or Proficient |
+| **$100** | OFF | **0.001** | Micro (small profit) |
 | $500+ | OFF or ON | 0.01 / 0.5% | Alpha |
 | $1000+ | ON | 1% | Alpha |
 
-**Symbol**: XAUUSD, XAUUSDm  
-**Timeframe**: M1 (1 minute)
+**Default setup for XAUUSDm $100 / M1 (MetaTrader 5):**
+- Symbol: XAUUSDm
+- Timeframe: M1 only
+- Lot: 0.001 (margin-based ON)
+- Initial Deposit: 100
+- Max positions: 5
+- Compounding: OFF
 
 ---
+
+## Symbol
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| **Symbol** | XAUUSDm | Single symbol (XAUUSDm in MetaTrader 5 for Gold) |
+| **Trade multiple symbols** | false | When ON, trade all symbols in list |
+| **Symbol List** | XAUUSDm | Comma-separated (used when Multi ON) |
+
+**XAUUSDm + $100 setup:** Symbol = **XAUUSDm** (MetaTrader 5 Gold). Initial Deposit = **100**. Use 0.001 lot; margin-based ON. *Note: Many brokers need ~$500+ margin for 0.001 lot – use a cent account or broker with micro lots if $100 is not enough.*
+
+## Strategy Tester
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| **Initial Deposit** | 100 | Reference value – set Strategy Tester **Deposit** to match |
+
+**XAUUSDm $100:** In Strategy Tester set **Symbol** to **XAUUSDm**, **Deposit** to **100**, **Timeframe** M1. Use mode **"Open prices only"** or **"Every tick"**. Preset **Micro**, 0.001 lot.
+
+**EURUSDm $100 / 0.01 lot – "not enough money":** Your tester is using **leverage 1:1**, so 0.01 lot needs ~\$1,170 margin and \$100 is not enough. Set the Strategy Tester **Leverage** to **Unlimited** or **1:100** (in the tester settings or in the testing agent configuration). Then 0.01 lot will need ~\$12–30 margin and orders will open.
+
+## Strategy Tester Logs
+
+When running in Strategy Tester, the EA logs to the **Journal** tab:
+- **Debug mode ON:** `[GainzAlgo] Signal BUY/SELL`, `>>> BUY/SELL opened/failed`, and **`[GainzAlgo] Trade closed | ... | Profit: X.XX | Balance: Y.YY`** for each closed position
+- **OnDeinit:** Total Investment, Final Balance, Total Profit/Loss (currency and %)
 
 ## Features
 
