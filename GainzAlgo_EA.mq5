@@ -380,10 +380,11 @@ void ProcessSymbol(string symbol, int hEmaF, int hEmaS, int hEmaT, int hRsi, int
    bool longExitTrend  = (emaF1 > emaS1 && emaF0 < emaS0);
    bool shortExitTrend = (emaF1 < emaS1 && emaF0 > emaS0);
 
-   double longSL = close0 - atr0 * effSL;
-   double longTP = close0 + atr0 * effTP;
-   double shortSL = close0 + atr0 * effSL;
-   double shortTP = close0 - atr0 * effTP;
+   // Swapped for 1min: TP at SL distance (tighter), SL at TP distance (wider)
+   double longTP  = close0 + atr0 * effSL;   // TP tighter (was SL mult)
+   double longSL  = close0 - atr0 * effTP;   // SL wider (was TP mult)
+   double shortTP = close0 - atr0 * effSL;   // TP tighter (was SL mult)
+   double shortSL = close0 + atr0 * effTP;   // SL wider (was TP mult)
 
    int digits = (int)SymbolInfoInteger(symbol, SYMBOL_DIGITS);
    longSL   = NormalizeDouble(longSL, digits);
