@@ -1,6 +1,6 @@
 # GainzAlgo EA for MetaTrader 5
 
-Expert Advisor for MetaTrader 5, optimized for 1-minute XAUUSD (Gold) scalping. Converted from Pine Script.
+Expert Advisor for MetaTrader 5, optimized for 1-minute XAUUSD (Gold) scalping. Converted from Pine Script. Supports a **75%+ win-rate style** via strict filters and one position per direction.
 
 ---
 
@@ -9,14 +9,21 @@ Expert Advisor for MetaTrader 5, optimized for 1-minute XAUUSD (Gold) scalping. 
 GainzAlgo EA is a **trend-following scalping strategy** that uses:
 - **3 EMAs** (Fast, Slow, Trend) for trend direction
 - **RSI** for momentum filter (avoid overbought/oversold entries)
-- **ATR** for dynamic Stop Loss and Take Profit
+- **ATR** for dynamic Stop Loss and Take Profit (TP ≥ SL)
+- **M5 trend filter** – only long when M5 is bullish, only short when M5 is bearish
+- **New-signal only** – open only when the condition *just* became true (no stacking on every bar)
+- **Max 1 position per direction** – no stacking longs or shorts
 
 ### Core Logic
 
 ```
 BUY when:  Bullish trend (EMA stack up) + Price above trend + (Crossover OR Pullback OR Bounce) + RSI not overbought
+           + M5 bullish (close > M5 MA(34) for N bars) + Candle confirm (close > open) + NEW signal (was false last bar)
 SELL when: Bearish trend (EMA stack down) + Price below trend + (Crossover OR Pullback OR Bounce) + RSI not oversold
+           + M5 bearish (close < M5 MA(34) for N bars) + Candle confirm (close < open) + NEW signal (was false last bar)
 ```
+
+Exits: SL/TP at entry, or trend-reversal exit (EMA crossover against position).
 
 ---
 
@@ -42,7 +49,7 @@ SELL when: Bearish trend (EMA stack down) + Price below trend + (Crossover OR Pu
                                  ▼
 ┌────────────────────────────────────────────────────────────────────────────┐
 │                     INDICATOR CALCULATION (Bar 1 = Closed)                 │
-│  EMA Fast(5) │ EMA Slow(13) │ EMA Trend(34) │ RSI(7) │ ATR(14)            │
+│  EMA Fast(5) │ EMA Slow(13) │ EMA Trend(34) │ RSI(7) │ ATR(14) │ M5 MA(34) │
 └────────────────────────────────────────────────────────────────────────────┘
                                  │
                                  ▼
@@ -61,19 +68,28 @@ SELL when: Bearish trend (EMA stack down) + Price below trend + (Crossover OR Pu
                   │                        │
                   ▼                        ▼
     ┌─────────────────────────┐  ┌─────────────────────────┐
-    │ LONG ENTRY SIGNAL?     │  │ SHORT ENTRY SIGNAL?     │
-    │ • EMA Crossover        │  │ • EMA Crossunder        │
-    │ • OR Pullback + RSI    │  │ • OR Pullback + RSI     │
-    │ • OR Price Bounce      │  │ • OR Price Bounce       │
-    │ • RSI < Overbought     │  │ • RSI > Oversold        │
+    │ LONG ENTRY SIGNAL?       │  │ SHORT ENTRY SIGNAL?     │
+    │ • EMA Crossover          │  │ • EMA Crossunder        │
+    │ • OR Pullback + RSI      │  │ • OR Pullback + RSI     │
+    │ • OR Price Bounce        │  │ • OR Price Bounce       │
+    │ • RSI < Overbought       │  │ • RSI > Oversold        │
     └────────────┬────────────┘  └────────────┬────────────┘
                  │                           │
                  ▼                           ▼
     ┌─────────────────────────┐  ┌─────────────────────────┐
-    │  Close Short (if any)   │  │  Close Long (if any)    │
-    │  BUY with SL/TP        │  │  SELL with SL/TP        │
-    │  SL = Entry - ATR×mult │  │  SL = Entry + ATR×mult  │
-    │  TP = Entry + ATR×mult │  │  TP = Entry - ATR×mult  │
+    │ 75% FILTERS (optional)   │  │ 75% FILTERS (optional)   │
+    │ • M5 bullish (N bars)     │  │ • M5 bearish (N bars)    │
+    │ • Candle: close > open    │  │ • Candle: close < open   │
+    │ • NEW signal (not prev)   │  │ • NEW signal (not prev)  │
+    └────────────┬────────────┘  └────────────┬────────────┘
+                 │                           │
+                 ▼                           ▼
+    ┌─────────────────────────┐  ┌─────────────────────────┐
+    │  Close Short (if any)    │  │  Close Long (if any)     │
+    │  BUY (max 1 long)       │  │  SELL (max 1 short)      │
+    │  SL = Entry - ATR×mult  │  │  SL = Entry + ATR×mult   │
+    │  TP ≥ SL distance       │  │  TP ≥ SL distance        │
+    │  Min SL points (if set)  │  │  Min SL points (if set)  │
     └─────────────────────────┘  └─────────────────────────┘
                  │                           │
                  └───────────────┬───────────┘
@@ -206,6 +222,10 @@ If you see "IO operation failed with code 49 (233)":
 |-----------|---------|-------------|
 | Timeframe mode | M1 only | **M1 only** – Always use 1-minute (recommended for scalping) |
 | | | **Current chart** – Use the chart's timeframe |
+| **Use M5 trend** | true | Only long when M5 bullish, short when M5 bearish (75% strategy) |
+| **M5 trend bars** | 2 | Require N consecutive M5 bars in trend (2 = confirmation) |
+| **Candle confirm** | true | Bar must close in trade direction (close > open long, close < open short) |
+| **Min SL (points)** | 0 | Minimum SL distance in points (0 = off; e.g. 50 for XAUUSD to avoid noise) |
 
 ### Indicators
 | Parameter | Default | Description |
@@ -225,7 +245,7 @@ If you see "IO operation failed with code 49 (233)":
 | Take Profit (x ATR) | 2.0 | Manual TP when ATR off |
 | Stop Loss (x ATR) | 1.0 | Manual SL when ATR off |
 | **Auto lot to fit margin** | true | Reduces lot to fit margin (avoids "not enough money") |
-| **Max positions** | 5 | Max open trades per signal |
+| **Max positions** | 1 | Max open positions per direction (1 = 75% strategy, no stacking) |
 | Enable Compounding | false | Lot size grows with balance |
 | Fixed Lot Size | 0.001 | Max lot (or fixed when margin-based) |
 | Risk % per trade | 0.5 | Balance % when compounding ON |
@@ -264,7 +284,9 @@ If you see "IO operation failed with code 49 (233)":
 - Timeframe: M1 only
 - Lot: 0.001 (margin-based ON)
 - Initial Deposit: 100
-- Max positions: 5
+- Max positions: **1** (75% strategy)
+- Use M5 trend: ON, M5 trend bars: 2, Candle confirm: ON
+- Min SL points: 0 (or 50–80 for XAUUSD if quick SL hits)
 - Compounding: OFF
 
 ---
@@ -298,6 +320,12 @@ When running in Strategy Tester, the EA logs to the **Journal** tab:
 ## Features
 
 - **New bar only** – Trades on confirmed bar close (no repainting)
+- **New-signal only** – Opens only when condition *just* became true (no entry every bar)
+- **Max 1 position per direction** – No stacking longs or shorts (75% strategy)
+- **M5 trend filter** – Long only when M5 bullish, short only when M5 bearish (configurable N-bar confirmation)
+- **Candle confirmation** – Signal bar must close in trade direction (reduces false breakouts)
+- **TP ≥ SL** – Take-profit distance ≥ stop-loss (better R:R)
+- **Min SL (points)** – Optional minimum SL distance to avoid noise stop-outs (e.g. XAUUSD)
 - **BUY/SELL arrows** – Chart signals with TP/SL labels
 - **Alerts** – Popup on each trade
 - **Auto SL/TP** – Set at entry

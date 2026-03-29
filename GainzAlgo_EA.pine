@@ -1,11 +1,11 @@
-// GainzAlgo EA - Optimized for 1min XAUUSD (Gold)
+// GainzAlgo EA - Optimized for 1min XAUUSD (Gold) | 75% strategy: new-signal-only, M5 trend, candle confirm
 // @version=5
 strategy("GainzAlgo EA [1m XAUUSD]", overlay=true, pyramiding=0, default_qty_type=strategy.percent_of_equity, default_qty_value=10, initial_capital=10000, commission_type=strategy.commission.percent, commission_value=0.1, process_orders_on_close=true, max_lines_count=500, max_boxes_count=500, max_labels_count=500)
 
 // ═══════════════════════════════════════════════════════════════
-// PRESET SELECTION (Essential | Proficient | Alpha)
+// PRESET SELECTION (Micro | Essential | Proficient | Alpha) — TP ≥ SL
 // ═══════════════════════════════════════════════════════════════
-preset = input.string("Alpha (Aggressive)", "Preset", options=["Essential (Conservative)", "Proficient (Balanced)", "Alpha (Aggressive)"], group="Preset")
+preset = input.string("Micro (Scalping)", "Preset", options=["Micro (Scalping)", "Essential (Conservative)", "Proficient (Balanced)", "Alpha (Aggressive)"], group="Preset")
 
 // ═══════════════════════════════════════════════════════════════
 // INPUTS
@@ -29,23 +29,27 @@ riskPct = input.float(1.0, "Risk % per Trade", minval=0.1, maxval=10, step=0.1, 
 tpMultiplier = input.float(2.0, "Take Profit (x ATR)", minval=0.5, maxval=5, step=0.1, group="Risk Management")
 slMultiplier = input.float(1.0, "Stop Loss (x ATR)", minval=0.5, maxval=3, step=0.1, group="Risk Management")
 
+// 75% strategy filters (match MQ5 EA)
+useM5Trend = input.bool(true, "Use M5 trend filter", group="75% Strategy")
+m5TrendBars = input.int(2, "M5 trend confirmation (bars)", minval=1, maxval=5, group="75% Strategy")
+candleConfirm = input.bool(true, "Candle confirmation (bar close in trade direction)", group="75% Strategy")
+minSLPoints = input.float(0, "Min SL (points, 0=off)", minval=0, step=1, group="75% Strategy")
+
 // Visuals
 showSignals = input.bool(true, "Show Entry/Exit Signals", group="Display")
 showEMAs = input.bool(true, "Show EMAs", group="Display")
 showSLTP = input.bool(true, "Show SL/TP Levels", group="Display")
 showProjections = input.bool(true, "Show Projection Lines (TradingView style)", group="Display")
 projectionBars = input.int(60, "Projection Extend (bars)", minval=10, maxval=200, group="Display")
+showPositionTable = input.bool(true, "Show Position Table (Entry / SL / TP / Risk:Reward)", group="Display")
 
 // ═══════════════════════════════════════════════════════════════
-// PRESET-BASED PARAMETER ADJUSTMENTS
-// Essential: Conservative - fewer signals, wider stops
-// Proficient: Balanced
-// Alpha: Aggressive - more signals, tighter stops, best for lower TFs
+// PRESET-BASED PARAMETER ADJUSTMENTS (TP ≥ SL in all presets)
+// Micro: $100 scalping, small profit | Essential: conservative | Proficient: balanced | Alpha: aggressive
 // ═══════════════════════════════════════════════════════════════
-// 1m XAUUSD: gold spreads/spikes need slightly wider SL, tighter TP for scalping
-presetTP = preset == "Essential (Conservative)" ? 2.2 : preset == "Proficient (Balanced)" ? 1.8 : 1.4
-presetSL = preset == "Essential (Conservative)" ? 1.8 : preset == "Proficient (Balanced)" ? 1.2 : 1.0
-presetRSIThresh = preset == "Essential (Conservative)" ? 3.0 : preset == "Proficient (Balanced)" ? 5.0 : 8.0
+presetTP = preset == "Micro (Scalping)" ? 1.0 : preset == "Essential (Conservative)" ? 2.2 : preset == "Proficient (Balanced)" ? 1.8 : 1.4
+presetSL = preset == "Micro (Scalping)" ? 0.8 : preset == "Essential (Conservative)" ? 1.8 : preset == "Proficient (Balanced)" ? 1.2 : 1.0
+presetRSIThresh = preset == "Micro (Scalping)" ? 6.0 : preset == "Essential (Conservative)" ? 3.0 : preset == "Proficient (Balanced)" ? 5.0 : 8.0
 
 // ═══════════════════════════════════════════════════════════════
 // INDICATORS (No Repainting - uses confirmed close)
@@ -84,13 +88,34 @@ shortBounce = ta.crossunder(close, emaFast) and emaFast < emaSlow
 shortCondition = bearishTrend and priceBelowTrend and (shortCrossover or shortPullback or shortBounce) and rsi > rsiOS
 
 // ═══════════════════════════════════════════════════════════════
+// 75% STRATEGY FILTERS (match MQ5 EA)
+// ═══════════════════════════════════════════════════════════════
+// M5 trend: only long when M5 bullish (close > MA(34)), only short when M5 bearish (N-bar confirmation)
+m5Bull1 = request.security(syminfo.tickerid, "5", close[1] > ta.ema(close, 34)[1], barmerge.gaps_off, barmerge.lookahead_off)
+m5Bear1 = request.security(syminfo.tickerid, "5", close[1] < ta.ema(close, 34)[1], barmerge.gaps_off, barmerge.lookahead_off)
+m5Bull2 = request.security(syminfo.tickerid, "5", close[1] > ta.ema(close, 34)[1] and close[2] > ta.ema(close, 34)[2], barmerge.gaps_off, barmerge.lookahead_off)
+m5Bear2 = request.security(syminfo.tickerid, "5", close[1] < ta.ema(close, 34)[1] and close[2] < ta.ema(close, 34)[2], barmerge.gaps_off, barmerge.lookahead_off)
+m5Bullish = not useM5Trend or (m5TrendBars >= 2 ? m5Bull2 : m5Bull1)
+m5Bearish = not useM5Trend or (m5TrendBars >= 2 ? m5Bear2 : m5Bear1)
+
+// Candle confirmation: bar must close in trade direction
+candleLong = not candleConfirm or close > open
+candleShort = not candleConfirm or close < open
+
+// New-signal only: enter only when condition *just* became true (was false on previous bar)
+prevLongCond = longCondition[1]
+prevShortCond = shortCondition[1]
+newLong = longCondition and not prevLongCond and m5Bullish and candleLong
+newShort = shortCondition and not prevShortCond and m5Bearish and candleShort
+
+// ═══════════════════════════════════════════════════════════════
 // EXIT CONDITIONS (Trend reversal)
 // ═══════════════════════════════════════════════════════════════
 longExitTrend = ta.crossunder(emaFast, emaSlow)
 shortExitTrend = ta.crossover(emaFast, emaSlow)
 
 // ═══════════════════════════════════════════════════════════════
-// SL/TP LEVELS (Locked at entry - NO REPAINTING)
+// SL/TP LEVELS (TP ≥ SL; optional min SL in points - NO REPAINTING)
 // ═══════════════════════════════════════════════════════════════
 var float longSL = na
 var float longTP = na
@@ -101,29 +126,76 @@ var float shortTP = na
 effTPMult = useAtrMultiplier ? presetTP : tpMultiplier
 effSLMult = useAtrMultiplier ? presetSL : slMultiplier
 
-// Calculate levels only when entering (confirmed bar) - ensure valid ATR
+// SL distance: ATR-based, with optional minimum in points (e.g. XAUUSD)
 validAtr = atr > 0 ? atr : ta.sma(high - low, 14)
+minSLDist = minSLPoints > 0 ? minSLPoints * syminfo.mintick : 0.0
+slDist = math.max(validAtr * effSLMult, minSLDist)
+
+// Calculate levels only when signal is true (for entry and display)
 if barstate.isconfirmed
     if longCondition
-        longSL := close - validAtr * effSLMult
+        longSL := close - slDist
         longTP := close + validAtr * effTPMult
     if shortCondition
-        shortSL := close + validAtr * effSLMult
+        shortSL := close + slDist
         shortTP := close - validAtr * effTPMult
 
+// Risk / Reward (professional: min 1:2, preferred 1:3)
+riskLong = longCondition ? (close - longSL) : na
+rewardLong = longCondition ? (longTP - close) : na
+rrLong = (riskLong > 0 and rewardLong != na) ? rewardLong / riskLong : na
+riskShort = shortCondition ? (shortSL - close) : na
+rewardShort = shortCondition ? (close - shortTP) : na
+rrShort = (riskShort > 0 and rewardShort != na) ? rewardShort / riskShort : na
+
 // ═══════════════════════════════════════════════════════════════
-// STRATEGY EXECUTION (Only on confirmed bars)
+// POSITION TABLE (Professional: Entry, SL, TP, Risk, Reward, R:R)
+// Replaces pane labels / Long–Short tool with a single dashboard
+// ═══════════════════════════════════════════════════════════════
+var table posTable = na
+if showPositionTable and barstate.isconfirmed
+    if longCondition or shortCondition
+        if na(posTable)
+            posTable := table.new(position.top_right, 2, 11)
+        isLong = longCondition
+        entryPrice = close
+        slPrice = isLong ? longSL : shortSL
+        tpPrice = isLong ? longTP : shortTP
+        riskDist = isLong ? (entryPrice - slPrice) : (slPrice - entryPrice)
+        rewardDist = isLong ? (tpPrice - entryPrice) : (entryPrice - tpPrice)
+        rrRatio = riskDist > 0 ? rewardDist / riskDist : 0.0
+        table.cell(posTable, 0, 0, "Position Plan", text_color=color.white, text_size=size.small, bgcolor=color.new(color.blue, 70))
+        table.cell(posTable, 1, 0, isLong ? "LONG" : "SHORT", text_color=isLong ? color.lime : color.red, text_size=size.small, bgcolor=color.new(color.blue, 70))
+        table.cell(posTable, 0, 1, "Entry", text_color=color.gray, text_size=size.tiny)
+        table.cell(posTable, 1, 1, str.tostring(entryPrice, "#.##"), text_color=color.white, text_size=size.tiny)
+        table.cell(posTable, 0, 2, "Stop Loss", text_color=color.gray, text_size=size.tiny)
+        table.cell(posTable, 1, 2, str.tostring(slPrice, "#.##"), text_color=color.red, text_size=size.tiny)
+        table.cell(posTable, 0, 3, "Take Profit", text_color=color.gray, text_size=size.tiny)
+        table.cell(posTable, 1, 3, str.tostring(tpPrice, "#.##"), text_color=color.green, text_size=size.tiny)
+        table.cell(posTable, 0, 4, "Risk", text_color=color.gray, text_size=size.tiny)
+        table.cell(posTable, 1, 4, str.tostring(riskDist, "#.##"), text_color=color.white, text_size=size.tiny)
+        table.cell(posTable, 0, 5, "Reward", text_color=color.gray, text_size=size.tiny)
+        table.cell(posTable, 1, 5, str.tostring(rewardDist, "#.##"), text_color=color.white, text_size=size.tiny)
+        table.cell(posTable, 0, 6, "R:R Ratio", text_color=color.gray, text_size=size.tiny)
+        table.cell(posTable, 1, 6, "1:" + str.tostring(rrRatio, "#.#"), text_color=rrRatio >= 2 ? color.lime : color.orange, text_size=size.tiny)
+        table.cell(posTable, 0, 7, "Risk %", text_color=color.gray, text_size=size.tiny)
+        table.cell(posTable, 1, 7, str.tostring(riskPct, "#.#") + "%", text_color=color.white, text_size=size.tiny)
+        table.cell(posTable, 0, 8, "Rule", text_color=color.gray, text_size=size.tiny)
+        table.cell(posTable, 1, 8, rrRatio >= 2 ? "1:2+ OK" : "<1:2", text_color=rrRatio >= 2 ? color.lime : color.orange, text_size=size.tiny)
+
+// ═══════════════════════════════════════════════════════════════
+// STRATEGY EXECUTION (New-signal only, max 1 position per direction)
 // ═══════════════════════════════════════════════════════════════
 if barstate.isconfirmed
-    // Long Position Entry (with proper SL and TP)
-    if longCondition and strategy.position_size <= 0
+    // Long Position Entry — only on NEW long signal (75% strategy: no stacking)
+    if newLong and strategy.position_size <= 0
         if strategy.position_size < 0
             strategy.close("Short Position", comment="Reverse")
         strategy.entry("Long Position", strategy.long)
         strategy.exit("Long Position Exit", "Long Position", stop=longSL, limit=longTP, comment="SL | TP")
 
-    // Short Position Entry (with proper SL and TP)
-    if shortCondition and strategy.position_size >= 0
+    // Short Position Entry — only on NEW short signal (75% strategy: no stacking)
+    if newShort and strategy.position_size >= 0
         if strategy.position_size > 0
             strategy.close("Long Position", comment="Reverse")
         strategy.entry("Short Position", strategy.short)

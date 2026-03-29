@@ -50,7 +50,7 @@ input bool  InpUseCompounding = false;  // Enable Compounding (lot size grows wi
 input bool  InpUseMarginBasedLot = true;   // Auto lot to fit margin (ON = no "not enough money")
 input double InpLotSize     = 0.01;   // Lot size (0.01 for EURUSDm $100; fixed when margin-based gives 0)
 input double InpCompoundingPercent = 0.5; // Risk % per trade when compounding (0.5% = $0.50 on $100)
-input int   InpMaxPositions = 5;  // Max open positions per signal (5 trades)
+input int   InpMaxPositions = 1;  // Max open positions per direction (1 = 75% strategy)
 input int   InpMagic        = 123456; // Magic Number
 
 input group "=== Timeframe ==="
@@ -61,10 +61,15 @@ enum ENUM_TIMEFRAME_MODE
 };
 
 input ENUM_TIMEFRAME_MODE InpTimeframe = TF_M1;  // Timeframe mode (M1 for $100 scalping)
+input bool   InpUseM5Trend = true;   // M5 trend filter (75% strategy: only trade with M5 trend)
+input int    InpM5TrendBars = 2;      // M5 trend confirmation (2 = require 2 bars in trend)
+input bool   InpCandleConfirm = true; // Candle confirmation (bar close in trade direction)
+input double InpMinSLPoints = 0;     // Min SL distance (points, 0=off; e.g. 30 for XAUUSD)
 
 input group "=== Display ==="
 input bool  InpShowSignals  = true;  // Show BUY/SELL Arrows
 input bool  InpShowTPSLLabels = false;  // Show TP/SL text labels
+input bool  InpShowPositionDashboard = true;  // Show Position Table (Entry/SL/TP/Risk:Reward) in corner
 input bool  InpDebugMode    = true;  // Debug: full logs + profit per trade | OFF: live, errors only
 
 //+------------------------------------------------------------------+
@@ -74,7 +79,10 @@ struct SymbolData
 {
    string   symbol;
    int      hEmaFast, hEmaSlow, hEmaTrend, hRsi, hAtr;
+   int      hM5Trend;
    datetime lastBarTime;
+   bool     lastLongCond;
+   bool     lastShortCond;
 };
 
 //+------------------------------------------------------------------+
@@ -85,13 +93,19 @@ ENUM_TIMEFRAMES periodToUse;
 CPositionInfo   posInfo;
 int             handleEmaFast, handleEmaSlow, handleEmaTrend;
 int             handleRsi, handleAtr;
+int             handleM5Trend = INVALID_HANDLE;
 double          presetTP, presetSL, presetRSIThresh;
 datetime        lastBarTime = 0;
 double          initialBalance = 0;
 string          g_symbols[];      // Symbols to trade
 int             g_symbolCount = 0;
 bool            g_marginWarned = false;  // One-time leverage warning
+bool            g_lastLongCond = false;
+bool            g_lastShortCond = false;
 SymbolData      g_multiData[];    // Per-symbol data for multi mode
+// Position dashboard (professional Entry/SL/TP/R:R display)
+double          g_dashEntry = 0, g_dashSL = 0, g_dashTP = 0;
+int             g_dashDir = 0;    // 1=long, -1=short, 0=none
 
 //+------------------------------------------------------------------+
 //| Parse symbol list into array                                      |
@@ -185,6 +199,9 @@ int OnInit()
          g_multiData[i].hEmaTrend = iMA(sym, periodToUse, InpEmaTrendLen, 0, MODE_EMA, PRICE_CLOSE);
          g_multiData[i].hRsi      = iRSI(sym, periodToUse, InpRsiLen, PRICE_CLOSE);
          g_multiData[i].hAtr      = iATR(sym, periodToUse, InpAtrLen);
+         g_multiData[i].hM5Trend  = iMA(sym, PERIOD_M5, 34, 0, MODE_EMA, PRICE_CLOSE);
+         g_multiData[i].lastLongCond  = false;
+         g_multiData[i].lastShortCond = false;
          if(g_multiData[i].hEmaFast == INVALID_HANDLE || g_multiData[i].hEmaSlow == INVALID_HANDLE ||
             g_multiData[i].hEmaTrend == INVALID_HANDLE || g_multiData[i].hRsi == INVALID_HANDLE || g_multiData[i].hAtr == INVALID_HANDLE)
          {
@@ -213,6 +230,7 @@ int OnInit()
       handleEmaTrend = iMA(sym, periodToUse, InpEmaTrendLen, 0, MODE_EMA, PRICE_CLOSE);
       handleRsi      = iRSI(sym, periodToUse, InpRsiLen, PRICE_CLOSE);
       handleAtr      = iATR(sym, periodToUse, InpAtrLen);
+      handleM5Trend  = iMA(sym, PERIOD_M5, 34, 0, MODE_EMA, PRICE_CLOSE);
       if(handleEmaFast == INVALID_HANDLE || handleEmaSlow == INVALID_HANDLE ||
          handleEmaTrend == INVALID_HANDLE || handleRsi == INVALID_HANDLE || handleAtr == INVALID_HANDLE)
       {
@@ -246,6 +264,7 @@ int OnInit()
 //+------------------------------------------------------------------+
 void OnDeinit(const int reason)
 {
+   Comment("");  // Clear position dashboard
    // Strategy Tester summary log
    double finalBalance = AccountInfoDouble(ACCOUNT_BALANCE);
    double totalProfit = finalBalance - initialBalance;
@@ -282,6 +301,7 @@ void OnDeinit(const int reason)
          if(g_multiData[i].hEmaTrend != INVALID_HANDLE) IndicatorRelease(g_multiData[i].hEmaTrend);
          if(g_multiData[i].hRsi != INVALID_HANDLE)      IndicatorRelease(g_multiData[i].hRsi);
          if(g_multiData[i].hAtr != INVALID_HANDLE)      IndicatorRelease(g_multiData[i].hAtr);
+         if(g_multiData[i].hM5Trend != INVALID_HANDLE)  IndicatorRelease(g_multiData[i].hM5Trend);
       }
    }
    else
@@ -291,6 +311,7 @@ void OnDeinit(const int reason)
       if(handleEmaTrend != INVALID_HANDLE) IndicatorRelease(handleEmaTrend);
       if(handleRsi != INVALID_HANDLE)      IndicatorRelease(handleRsi);
       if(handleAtr != INVALID_HANDLE)      IndicatorRelease(handleAtr);
+      if(handleM5Trend != INVALID_HANDLE)  IndicatorRelease(handleM5Trend);
    }
 }
 
@@ -328,7 +349,8 @@ void SetPresetValues()
 //+------------------------------------------------------------------+
 //| Process one symbol (single or multi mode)                         |
 //+------------------------------------------------------------------+
-void ProcessSymbol(string symbol, int hEmaF, int hEmaS, int hEmaT, int hRsi, int hAtr, datetime &lastBar)
+void ProcessSymbol(string symbol, int hEmaF, int hEmaS, int hEmaT, int hRsi, int hAtr, datetime &lastBar,
+                   int hM5Trend, bool &inOutLastLong, bool &inOutLastShort)
 {
    datetime currentBarTime = iTime(symbol, periodToUse, 0);
    if(currentBarTime == lastBar) return;
@@ -361,6 +383,10 @@ void ProcessSymbol(string symbol, int hEmaF, int hEmaS, int hEmaT, int hRsi, int
 
    double effTP = InpUseAtrMult ? presetTP : InpTpMult;
    double effSL = InpUseAtrMult ? presetSL : InpSlMult;
+   double point = SymbolInfoDouble(symbol, SYMBOL_POINT);
+   double slDist = atr0 * effSL;
+   if(InpMinSLPoints > 0 && point > 0 && slDist < InpMinSLPoints * point)
+      slDist = InpMinSLPoints * point;
 
    bool bullishTrend = (emaF0 > emaS0 && emaS0 > emaT0);
    bool bearishTrend = (emaF0 < emaS0 && emaS0 < emaT0);
@@ -377,14 +403,48 @@ void ProcessSymbol(string symbol, int hEmaF, int hEmaS, int hEmaT, int hRsi, int
    bool shortBounce    = (close1 > emaFast[1] && close0 < emaF0 && emaF0 < emaS0);
    bool shortCondition = bearishTrend && priceBelowTrend && (shortCrossover || shortPullback || shortBounce) && rsi0 > InpRsiOS;
 
+   // M5 trend filter (75% strategy: require N bars in trend to avoid false signals)
+   bool m5Bullish = true, m5Bearish = true;
+   if(InpUseM5Trend && hM5Trend != INVALID_HANDLE)
+   {
+      int m5Bars = (InpM5TrendBars < 1) ? 1 : MathMin(InpM5TrendBars, 10);
+      double m5MA[];
+      ArraySetAsSeries(m5MA, true);
+      if(CopyBuffer(hM5Trend, 0, 1, m5Bars, m5MA) >= m5Bars)
+      {
+         int barsBull = 0, barsBear = 0;
+         for(int b = 0; b < m5Bars; b++)
+         {
+            double c = iClose(symbol, PERIOD_M5, 1 + b);
+            if(c > m5MA[b]) barsBull++;
+            if(c < m5MA[b]) barsBear++;
+         }
+         m5Bullish = (barsBull >= m5Bars);
+         m5Bearish = (barsBear >= m5Bars);
+      }
+   }
+
+   // Candle confirmation: signal bar must close in trade direction (reduces false breakouts)
+   bool candleLong  = true, candleShort = true;
+   if(InpCandleConfirm)
+   {
+      double open1 = iOpen(symbol, periodToUse, 1);
+      candleLong  = (close0 > open1);
+      candleShort = (close0 < open1);
+   }
+
+   // New signal only: enter when condition just became true (not every bar)
+   bool newLong  = longCondition && !inOutLastLong && m5Bullish && candleLong;
+   bool newShort = shortCondition && !inOutLastShort && m5Bearish && candleShort;
+
    bool longExitTrend  = (emaF1 > emaS1 && emaF0 < emaS0);
    bool shortExitTrend = (emaF1 < emaS1 && emaF0 > emaS0);
 
-   // Swapped for 1min: TP at SL distance (tighter), SL at TP distance (wider)
-   double longTP  = close0 + atr0 * effSL;   // TP tighter (was SL mult)
-   double longSL  = close0 - atr0 * effTP;   // SL wider (was TP mult)
-   double shortTP = close0 - atr0 * effSL;   // TP tighter (was SL mult)
-   double shortSL = close0 + atr0 * effTP;   // SL wider (was TP mult)
+   // TP >= SL distance (better R:R for 75%+ win rate strategy); min SL in points avoids noise stop-outs
+   double longTP  = close0 + atr0 * effTP;
+   double longSL  = close0 - slDist;
+   double shortTP = close0 - atr0 * effTP;
+   double shortSL = close0 + slDist;
 
    int digits = (int)SymbolInfoInteger(symbol, SYMBOL_DIGITS);
    longSL   = NormalizeDouble(longSL, digits);
@@ -397,6 +457,13 @@ void ProcessSymbol(string symbol, int hEmaF, int hEmaS, int hEmaT, int hRsi, int
 
    int longCount = GetPositionCount(symbol, POSITION_TYPE_BUY);
    int shortCount = GetPositionCount(symbol, POSITION_TYPE_SELL);
+
+   if(symbol == _Symbol && (longCondition || shortCondition))
+   {
+      g_dashEntry = close0;
+      if(longCondition) { g_dashSL = longSL; g_dashTP = longTP; g_dashDir = 1; }
+      else              { g_dashSL = shortSL; g_dashTP = shortTP; g_dashDir = -1; }
+   }
 
    if(InpShowSignals && symbol == _Symbol && !MQLInfoInteger(MQL_TESTER))
    {
@@ -414,7 +481,7 @@ void ProcessSymbol(string symbol, int hEmaF, int hEmaS, int hEmaT, int hRsi, int
    else
       trade.SetTypeFilling(ORDER_FILLING_RETURN);
 
-   if(longCondition && longCount < InpMaxPositions)
+   if(newLong && longCount < InpMaxPositions)
    {
       if(shortCount > 0)
          CloseAllPositions(symbol);
@@ -440,7 +507,7 @@ void ProcessSymbol(string symbol, int hEmaF, int hEmaS, int hEmaT, int hRsi, int
       }
    }
 
-   if(shortCondition && shortCount < InpMaxPositions)
+   if(newShort && shortCount < InpMaxPositions)
    {
       if(longCount > 0)
          CloseAllPositions(symbol);
@@ -470,6 +537,9 @@ void ProcessSymbol(string symbol, int hEmaF, int hEmaS, int hEmaT, int hRsi, int
       CloseAllPositions(symbol);
    if(shortCount > 0 && shortExitTrend && !shortCondition)
       CloseAllPositions(symbol);
+
+   inOutLastLong  = longCondition;
+   inOutLastShort = shortCondition;
 }
 
 //+------------------------------------------------------------------+
@@ -481,12 +551,65 @@ void OnTick()
    {
       for(int i = 0; i < g_symbolCount; i++)
          ProcessSymbol(g_multiData[i].symbol, g_multiData[i].hEmaFast, g_multiData[i].hEmaSlow, g_multiData[i].hEmaTrend,
-                       g_multiData[i].hRsi, g_multiData[i].hAtr, g_multiData[i].lastBarTime);
+                       g_multiData[i].hRsi, g_multiData[i].hAtr, g_multiData[i].lastBarTime,
+                       g_multiData[i].hM5Trend, g_multiData[i].lastLongCond, g_multiData[i].lastShortCond);
    }
    else
    {
-      ProcessSymbol(g_symbols[0], handleEmaFast, handleEmaSlow, handleEmaTrend, handleRsi, handleAtr, lastBarTime);
+      ProcessSymbol(g_symbols[0], handleEmaFast, handleEmaSlow, handleEmaTrend, handleRsi, handleAtr, lastBarTime,
+                    handleM5Trend, g_lastLongCond, g_lastShortCond);
    }
+
+   if(InpShowPositionDashboard && !MQLInfoInteger(MQL_TESTER))
+      UpdatePositionDashboard();
+}
+
+//+------------------------------------------------------------------+
+//| Position dashboard: Entry, SL, TP, Risk, Reward, R:R (professional rule) |
+//+------------------------------------------------------------------+
+void UpdatePositionDashboard()
+{
+   if(!InpShowPositionDashboard) { Comment(""); return; }
+
+   double entry = 0, sl = 0, tp = 0;
+   int    dir   = 0;   // 1=long, -1=short
+
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+   {
+      if(!posInfo.SelectByIndex(i)) continue;
+      if(posInfo.Symbol() != _Symbol || posInfo.Magic() != InpMagic) continue;
+      entry = posInfo.PriceOpen();
+      sl    = posInfo.StopLoss();
+      tp    = posInfo.TakeProfit();
+      dir   = (posInfo.PositionType() == POSITION_TYPE_BUY) ? 1 : -1;
+      break;
+   }
+
+   if(dir == 0 && g_dashDir != 0)
+   {
+      entry = g_dashEntry;
+      sl    = g_dashSL;
+      tp    = g_dashTP;
+      dir   = g_dashDir;
+   }
+
+   if(dir == 0) { Comment(""); return; }
+
+   double risk   = (dir > 0) ? (entry - sl) : (sl - entry);
+   double reward = (dir > 0) ? (tp - entry) : (entry - tp);
+   double rr     = (risk > 0) ? (reward / risk) : 0;
+
+   int digits = (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS);
+   string s = "═════ GAINZALGO — Position Plan ═════\n";
+   s += (dir > 0 ? "LONG" : "SHORT") + "\n";
+   s += "Entry: "    + DoubleToString(entry, digits) + "\n";
+   s += "Stop Loss: "+ DoubleToString(sl, digits) + "\n";
+   s += "Take Profit: "+ DoubleToString(tp, digits) + "\n";
+   s += "Risk: "     + DoubleToString(risk, digits) + "\n";
+   s += "Reward: "   + DoubleToString(reward, digits) + "\n";
+   s += "R:R = 1:"   + DoubleToString(rr, 1) + (rr >= 2 ? " (OK)" : " (<1:2)") + "\n";
+   s += "══════════════════════════════════════════";
+   Comment(s);
 }
 
 //+------------------------------------------------------------------+
